@@ -25,7 +25,7 @@ export async function proxy(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname
   const isAuthPage   = pathname.startsWith('/login') || pathname.startsWith('/register')
-  const isPublic     = pathname.startsWith('/join') || pathname.startsWith('/api/applications') && request.method === 'POST'
+  const isPublic     = pathname === '/' || pathname.startsWith('/join') || pathname.startsWith('/api/applications') && request.method === 'POST'
   const isStaffRoute = pathname.startsWith('/dashboard') || pathname.startsWith('/groups') ||
                        pathname.startsWith('/members') || pathname.startsWith('/contributions') ||
                        pathname.startsWith('/loans') || pathname.startsWith('/applications') ||

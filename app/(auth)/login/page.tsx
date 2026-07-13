@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { Eye, EyeOff, Mail, Lock, Hash, Users, Briefcase } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { createClient } from '@/lib/supabase/client'
+import { authClient } from '@/lib/auth/client'
 
 type Tab = 'staff' | 'member'
 
@@ -27,14 +27,13 @@ export default function LoginPage() {
     const password = fd.get('password') as string
 
     try {
-      const supabase = createClient()
-      const { error: authError } = await supabase.auth.signInWithPassword({ email, password })
-      if (authError) throw authError
+      const { error: authError } = await authClient.signIn.email({ email, password })
+      if (authError) throw new Error(authError.message)
       router.push('/dashboard')
       router.refresh()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Hitilafu imetokea'
-      setError(msg === 'Invalid login credentials' ? 'Barua pepe au nywila si sahihi' : msg)
+      setError(/invalid|credential|password/i.test(msg) ? 'Barua pepe au nywila si sahihi' : msg)
     } finally {
       setLoading(false)
     }

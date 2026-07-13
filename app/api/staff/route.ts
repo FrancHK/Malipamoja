@@ -1,20 +1,15 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { getSessionUser } from '@/lib/auth/session'
+import { auth } from '@/lib/auth/server'
+import { sql } from '@/lib/db'
 import type { SystemRole } from '@/lib/types'
 
 export async function POST(req: Request) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getSessionUser()
   if (!user) return NextResponse.json({ error: 'Hakuna ruhusa' }, { status: 401 })
 
-  const { data: myProfile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  if (myProfile?.role !== 'mwenyekiti') {
+  const mine = await sql`select role from profiles where id = ${user.id} limit 1`
+  if (mine[0]?.role !== 'mwenyekiti') {
     return NextResponse.json({ error: 'Ni mwenyekiti tu anayeweza kuunda wafanyakazi' }, { status: 403 })
   }
 
@@ -28,21 +23,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Chaguo la nafasi si sahihi' }, { status: 400 })
   }
 
-  const adminClient = createAdminClient()
   const tempPassword = crypto.randomUUID()
 
-  const { data: newUser, error } = await adminClient.auth.admin.createUser({
+  const { data, error } = await auth.admin.createUser({
     email,
     password: tempPassword,
-    email_confirm: true,
-    user_metadata: { full_name, phone, role },
+    name: full_name,
   })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+  const newId = data?.user?.id
+  if (newId) {
+    // The app-level SystemRole lives on profiles.
+    await sql`
+      insert into profiles (id, full_name, phone, role)
+      values (${newId}, ${full_name}, ${phone ?? null}, ${role})
+      on conflict (id) do update
+        set full_name = excluded.full_name, phone = excluded.phone, role = excluded.role
+    `
+  }
+
   return NextResponse.json({
     success: true,
-    user_id: newUser.user?.id,
+    user_id: newId,
     temp_password: tempPassword,
   })
 }

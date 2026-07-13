@@ -5,31 +5,25 @@ import { StatCard } from '@/components/dashboard/StatCard'
 import { RecentActivity } from '@/components/dashboard/RecentActivity'
 import { GroupCard } from '@/components/groups/GroupCard'
 import { formatCurrency } from '@/lib/utils'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser, getProfile } from '@/lib/auth/session'
+import { sql } from '@/lib/db'
 import type { Group, Transaction, DashboardStats } from '@/lib/types'
 
 export const metadata: Metadata = { title: 'Dashboard' }
 
 export default async function DashboardPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getSessionUser()
   if (!user) return null
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name')
-    .eq('id', user.id)
-    .single()
-
+  const profile = await getProfile(user.id)
   const userFullName = profile?.full_name ?? user.email?.split('@')[0] ?? 'Mtumiaji'
 
-  const { data: memberships } = await supabase
-    .from('group_members')
-    .select('group_id, role')
-    .eq('user_id', user.id)
-    .eq('is_active', true)
+  const memberships = (await sql`
+    select group_id, role from group_members
+    where user_id = ${user.id} and is_active = true
+  `) as { group_id: string; role: string }[]
 
-  const groupIds = memberships?.map((m) => m.group_id) ?? []
+  const groupIds = memberships.map((m) => m.group_id)
 
   let stats: DashboardStats = {
     total_savings: 0,
@@ -43,21 +37,20 @@ export default async function DashboardPage() {
   let transactions: Transaction[] = []
 
   if (groupIds.length > 0) {
-    const [
-      { data: groupsData },
-      { data: allMembers },
-      { data: allLoans },
-      { data: allContributions },
-      { data: txData },
-    ] = await Promise.all([
-      supabase.from('groups').select('*').in('id', groupIds).order('created_at', { ascending: false }).limit(3),
-      supabase.from('group_members').select('group_id, user_id').in('group_id', groupIds).eq('is_active', true),
-      supabase.from('loans').select('group_id, amount, amount_paid, total_due, status').in('group_id', groupIds),
-      supabase.from('contributions').select('group_id, member_id, amount, status').in('group_id', groupIds),
-      supabase.from('transactions').select('*').in('group_id', groupIds).order('created_at', { ascending: false }).limit(6),
-    ])
+    const [groupsData, allMembers, allLoans, allContributions, txData] = await Promise.all([
+      sql`select id, name, description, contribution_amount::float8 as contribution_amount, contribution_cycle,
+                 interest_rate::float8 as interest_rate, max_loan_multiplier, created_by, created_at, updated_at
+          from groups where id = any(${groupIds}) order by created_at desc limit 3`,
+      sql`select group_id, user_id from group_members where group_id = any(${groupIds}) and is_active = true`,
+      sql`select group_id, amount::float8 as amount, amount_paid::float8 as amount_paid, total_due::float8 as total_due, status
+          from loans where group_id = any(${groupIds})`,
+      sql`select group_id, member_id, amount::float8 as amount, status
+          from contributions where group_id = any(${groupIds})`,
+      sql`select id, group_id, type, amount::float8 as amount, description, reference_id, performed_by, member_id, created_at
+          from transactions where group_id = any(${groupIds}) order by created_at desc limit 6`,
+    ]) as [Record<string, any>[], Record<string, any>[], Record<string, any>[], Record<string, any>[], Record<string, any>[]]
 
-    const roleMap = Object.fromEntries((memberships ?? []).map((m) => [m.group_id, m.role]))
+    const roleMap = Object.fromEntries(memberships.map((m) => [m.group_id, m.role]))
 
     const memberCountMap: Record<string, number> = {}
     const uniqueUserIds = new Set<string>()

@@ -7,7 +7,6 @@ import { LoanCard } from '@/components/loans/LoanCard'
 import { LoanRequestModal } from '@/components/loans/LoanRequestModal'
 import { Button } from '@/components/ui/Button'
 import { formatCurrency, getLoanProgress } from '@/lib/utils'
-import { createClient } from '@/lib/supabase/client'
 import { useUser } from '@/components/providers/UserProvider'
 import type { Loan, Group } from '@/lib/types'
 import type { LoanStatus } from '@/lib/types'
@@ -30,35 +29,16 @@ export default function LoansPage() {
   const [userRole, setUserRole] = useState<string>('member')
 
   async function fetchData() {
-    const supabase = createClient()
-    const { data: { user: authUser } } = await supabase.auth.getUser()
-    if (!authUser) return
-
-    const { data: memberships } = await supabase
-      .from('group_members')
-      .select('group_id, role')
-      .eq('user_id', authUser.id)
-      .eq('is_active', true)
-
-    const groupIds = memberships?.map((m) => m.group_id) ?? []
-    if (groupIds.length === 0) { setLoading(false); return }
-
-    const roles = memberships?.map((m) => m.role) ?? []
-    const topRole = roles.includes('admin') ? 'admin' : roles.includes('treasurer') ? 'treasurer' : 'member'
-    setUserRole(topRole)
-
-    const [{ data: loansData }, { data: groupsData }] = await Promise.all([
-      supabase
-        .from('loans')
-        .select('*, borrower:profiles!borrower_id(id, full_name, phone, avatar_url, created_at, updated_at)')
-        .in('group_id', groupIds)
-        .order('requested_at', { ascending: false }),
-      supabase.from('groups').select('*').in('id', groupIds).order('name'),
-    ])
-
-    setLoans((loansData ?? []) as Loan[])
-    setGroups((groupsData ?? []) as Group[])
-    setLoading(false)
+    try {
+      const res = await fetch('/api/loans')
+      if (!res.ok) return
+      const { loans, groups, userRole } = await res.json()
+      setUserRole(userRole ?? 'member')
+      setLoans((loans ?? []) as Loan[])
+      setGroups((groups ?? []) as Group[])
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function handleApprove(id: string) {

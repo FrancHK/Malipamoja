@@ -1,6 +1,7 @@
 import { Metadata } from 'next'
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser, getProfile } from '@/lib/auth/session'
+import { sql } from '@/lib/db'
 import { Header } from '@/components/layout/Header'
 import { formatCurrency } from '@/lib/utils'
 import { CheckCircle, Clock, AlertCircle } from 'lucide-react'
@@ -14,23 +15,20 @@ const STATUS_CONFIG = {
 }
 
 export default async function MemberContributionsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getSessionUser()
   if (!user) redirect('/login')
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name')
-    .eq('id', user.id)
-    .single()
+  const profile = await getProfile(user.id)
 
-  const { data: contributions } = await supabase
-    .from('contributions')
-    .select('*, group:groups(name)')
-    .eq('member_id', user.id)
-    .order('created_at', { ascending: false })
+  const list = (await sql`
+    select c.id, c.status, c.period_start, c.period_end, c.amount::float8 as amount,
+           case when g.id is null then null else json_build_object('name', g.name) end as group
+    from contributions c
+    left join groups g on g.id = c.group_id
+    where c.member_id = ${user.id}
+    order by c.created_at desc
+  `) as Record<string, any>[]
 
-  const list = contributions ?? []
   const totalPaid = list.filter(c => c.status === 'paid').reduce((s, c) => s + c.amount, 0)
   const totalPending = list.filter(c => c.status !== 'paid').reduce((s, c) => s + c.amount, 0)
 

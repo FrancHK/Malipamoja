@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { getSessionUser } from '@/lib/auth/session'
+import { auth } from '@/lib/auth/server'
+import { sql } from '@/lib/db'
 import { generateCode, deriveMemberPassword, memberEmail } from '@/lib/member-code'
 import { sendApprovalSMS } from '@/lib/sms'
 
@@ -12,65 +13,40 @@ export async function POST(
   const body = await req.json()
   const { action, rejection_reason } = body as { action: 'approve' | 'reject'; rejection_reason?: string }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getSessionUser()
   if (!user) return NextResponse.json({ error: 'Hakuna ruhusa' }, { status: 401 })
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  if (!profile || !['mwenyekiti', 'katibu', 'msimamizi'].includes(profile.role)) {
+  const mine = await sql`select role from profiles where id = ${user.id} limit 1`
+  if (!mine[0] || !['mwenyekiti', 'katibu', 'msimamizi'].includes(mine[0].role as string)) {
     return NextResponse.json({ error: 'Huna ruhusa ya kufanya hili' }, { status: 403 })
   }
 
-  const adminClient = createAdminClient()
-
-  const { data: application } = await adminClient
-    .from('member_applications')
-    .select('*')
-    .eq('id', id)
-    .single()
-
+  const apps = await sql`select * from member_applications where id = ${id} limit 1`
+  const application = apps[0]
   if (!application) return NextResponse.json({ error: 'Ombi halipatikani' }, { status: 404 })
   if (application.status !== 'pending') {
     return NextResponse.json({ error: 'Ombi hili tayari limefanyiwa maamuzi' }, { status: 400 })
   }
 
   if (action === 'reject') {
-    await adminClient.from('member_applications').update({
-      status: 'rejected',
-      reviewed_by: user.id,
-      reviewed_at: new Date().toISOString(),
-      rejection_reason: rejection_reason || null,
-    }).eq('id', id)
-
+    await sql`
+      update member_applications set
+        status = 'rejected', reviewed_by = ${user.id}, reviewed_at = now(),
+        rejection_reason = ${rejection_reason || null}
+      where id = ${id}
+    `
     return NextResponse.json({ success: true, action: 'rejected' })
   }
 
   // ── APPROVE ───────────────────────────────────────────────────────────────
 
-  // Count existing members to generate sequential code
-  const { count } = await adminClient
-    .from('profiles')
-    .select('*', { count: 'exact', head: true })
-    .eq('role', 'mwanachama')
-
-  const sequence = (count ?? 0) + 1
-  const code = generateCode(application.full_name, sequence)
-
-  // Check code uniqueness — increment if collision
-  let finalCode = code
-  let attempt = sequence
+  // Sequential member code, incremented on collision
+  const countRows = await sql`select count(*)::int as n from profiles where role = 'mwanachama'`
+  let attempt = (countRows[0].n as number) + 1
+  let finalCode = generateCode(application.full_name, attempt)
   while (true) {
-    const { data: existing } = await adminClient
-      .from('profiles')
-      .select('id')
-      .eq('member_code', finalCode)
-      .maybeSingle()
-    if (!existing) break
+    const existing = await sql`select id from profiles where member_code = ${finalCode} limit 1`
+    if (!existing[0]) break
     attempt++
     finalCode = generateCode(application.full_name, attempt)
   }
@@ -78,50 +54,43 @@ export async function POST(
   const email = memberEmail(finalCode)
   const password = deriveMemberPassword(finalCode)
 
-  // Create Supabase auth user for the member
-  const { data: newUser, error: createError } = await adminClient.auth.admin.createUser({
+  // Create the Neon Auth user for the member
+  const { data, error: createError } = await auth.admin.createUser({
     email,
     password,
-    email_confirm: true,
-    user_metadata: {
-      full_name: application.full_name,
-      phone: application.phone,
-      role: 'mwanachama',
-      member_code: finalCode,
-    },
+    name: application.full_name,
   })
-
   if (createError) {
     return NextResponse.json({ error: createError.message }, { status: 500 })
   }
+  const memberId = data?.user?.id
+  if (!memberId) {
+    return NextResponse.json({ error: 'Imeshindwa kuunda mtumiaji' }, { status: 500 })
+  }
 
-  const memberId = newUser.user!.id
-
-  // Upsert profile with member_code — trigger may have already created a partial row
-  await adminClient.from('profiles').upsert({
-    id: memberId,
-    full_name: application.full_name,
-    phone: application.phone,
-    role: 'mwanachama',
-    member_code: finalCode,
-  }, { onConflict: 'id' })
+  // Upsert profile with member_code + role
+  await sql`
+    insert into profiles (id, full_name, phone, role, member_code)
+    values (${memberId}, ${application.full_name}, ${application.phone}, 'mwanachama', ${finalCode})
+    on conflict (id) do update
+      set full_name = excluded.full_name, phone = excluded.phone,
+          role = excluded.role, member_code = excluded.member_code
+  `
 
   // Add member to their group if one was specified
   if (application.group_id) {
-    await adminClient.from('group_members').insert({
-      group_id: application.group_id,
-      user_id: memberId,
-      role: 'member',
-    })
+    await sql`
+      insert into group_members (group_id, user_id, role)
+      values (${application.group_id}, ${memberId}, 'member')
+    `
   }
 
   // Update application
-  await adminClient.from('member_applications').update({
-    status: 'approved',
-    reviewed_by: user.id,
-    reviewed_at: new Date().toISOString(),
-    member_code: finalCode,
-  }).eq('id', id)
+  await sql`
+    update member_applications set
+      status = 'approved', reviewed_by = ${user.id}, reviewed_at = now(), member_code = ${finalCode}
+    where id = ${id}
+  `
 
   // Send SMS (non-blocking — log error but don't fail the request)
   try {

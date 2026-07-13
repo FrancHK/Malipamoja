@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser } from '@/lib/auth/session'
 import { redirect } from 'next/navigation'
 import {
   BiBuildingHouse, BiGroup, BiWallet, BiCreditCard,
@@ -9,11 +9,8 @@ import {
 } from 'react-icons/bi'
 
 export default async function LandingPage() {
-  try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (user) redirect('/dashboard')
-  } catch { /* Supabase not configured */ }
+  const user = await getSessionUser()
+  if (user) redirect('/dashboard')
 
   return (
     <div className="min-h-screen bg-[#060611] text-white overflow-x-hidden">

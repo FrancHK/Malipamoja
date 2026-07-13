@@ -1,6 +1,7 @@
 import { Metadata } from 'next'
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser, getProfile } from '@/lib/auth/session'
+import { sql } from '@/lib/db'
 import { Header } from '@/components/layout/Header'
 import { StatCard } from '@/components/dashboard/StatCard'
 import { formatCurrency } from '@/lib/utils'
@@ -10,33 +11,26 @@ import Link from 'next/link'
 export const metadata: Metadata = { title: 'Dashibodi Yangu' }
 
 export default async function MemberDashboardPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getSessionUser()
   if (!user) redirect('/login')
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name, member_code')
-    .eq('id', user.id)
-    .single()
+  const profile = await getProfile(user.id)
 
   // My contributions
-  const { data: contributions } = await supabase
-    .from('contributions')
-    .select('amount, status, period_start, period_end')
-    .eq('member_id', user.id)
+  const contributions = (await sql`
+    select amount::float8 as amount, status, period_start, period_end
+    from contributions where member_id = ${user.id}
+  `) as { amount: number; status: string }[]
 
-  const totalPaid = (contributions ?? []).filter(c => c.status === 'paid').reduce((s, c) => s + c.amount, 0)
-  const pendingCount = (contributions ?? []).filter(c => c.status === 'pending').length
+  const totalPaid = contributions.filter(c => c.status === 'paid').reduce((s, c) => s + c.amount, 0)
+  const pendingCount = contributions.filter(c => c.status === 'pending').length
 
   // My groups info
-  const { data: memberships } = await supabase
-    .from('group_members')
-    .select('group_id')
-    .eq('user_id', user.id)
-    .eq('is_active', true)
+  const memberships = (await sql`
+    select group_id from group_members where user_id = ${user.id} and is_active = true
+  `) as { group_id: string }[]
 
-  const groupIds = memberships?.map(m => m.group_id) ?? []
+  const groupIds = memberships.map(m => m.group_id)
 
   // All members in my groups (for "hisa" view)
   let totalGroupSavings = 0
@@ -44,32 +38,28 @@ export default async function MemberDashboardPage() {
   let groupLoans: { borrower?: { full_name: string }, amount: number, status: string, purpose?: string | null }[] = []
 
   if (groupIds.length > 0) {
-    const [
-      { data: allContribs },
-      { data: allMembers },
-      { data: loans },
-    ] = await Promise.all([
-      supabase.from('contributions').select('amount, status').in('group_id', groupIds),
-      supabase.from('group_members').select('user_id').in('group_id', groupIds).eq('is_active', true),
-      supabase.from('loans')
-        .select('amount, status, purpose, borrower_id, borrower:profiles!borrower_id(full_name)')
-        .in('group_id', groupIds)
-        .in('status', ['active', 'approved']),
-    ])
+    const [allContribs, allMembers, loans] = await Promise.all([
+      sql`select amount::float8 as amount, status from contributions where group_id = any(${groupIds})`,
+      sql`select user_id from group_members where group_id = any(${groupIds}) and is_active = true`,
+      sql`select l.amount::float8 as amount, l.status, l.purpose, l.borrower_id,
+                 json_build_object('full_name', p.full_name) as borrower
+          from loans l join profiles p on p.id = l.borrower_id
+          where l.group_id = any(${groupIds}) and l.status in ('active', 'approved')`,
+    ]) as [{ amount: number; status: string }[], { user_id: string }[], Record<string, any>[]]
 
-    totalGroupSavings = (allContribs ?? []).filter(c => c.status === 'paid').reduce((s, c) => s + c.amount, 0)
-    totalGroupMembers = new Set((allMembers ?? []).map(m => m.user_id)).size
-    groupLoans = (loans ?? []) as unknown as typeof groupLoans
+    totalGroupSavings = allContribs.filter(c => c.status === 'paid').reduce((s, c) => s + c.amount, 0)
+    totalGroupMembers = new Set(allMembers.map(m => m.user_id)).size
+    groupLoans = loans as unknown as typeof groupLoans
   }
 
   // My active loan
-  const { data: myLoans } = await supabase
-    .from('loans')
-    .select('amount, total_due, amount_paid, status, due_date, purpose')
-    .eq('borrower_id', user.id)
-    .in('status', ['active', 'approved'])
+  const myLoans = (await sql`
+    select amount::float8 as amount, total_due::float8 as total_due, amount_paid::float8 as amount_paid,
+           status, due_date, purpose
+    from loans where borrower_id = ${user.id} and status in ('active', 'approved')
+  `) as { amount: number; total_due: number; amount_paid: number; status: string; due_date: string | null; purpose: string | null }[]
 
-  const activeLoan = myLoans?.[0] ?? null
+  const activeLoan = myLoans[0] ?? null
 
   return (
     <div className="flex flex-col h-full">

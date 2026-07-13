@@ -1,19 +1,13 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser, getProfile } from '@/lib/auth/session'
 import { MemberNav } from '@/components/layout/MemberNav'
 import { UserProvider } from '@/components/providers/UserProvider'
 
 export default async function MemberLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getSessionUser()
   if (!user) redirect('/login')
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name, role, member_code')
-    .eq('id', user.id)
-    .single()
-
+  const profile = await getProfile(user.id)
   if (!profile) redirect('/login')
 
   // Staff wanaelekezwa kwenye dashboard yao

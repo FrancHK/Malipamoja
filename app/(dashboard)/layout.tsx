@@ -1,24 +1,18 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser, getProfile } from '@/lib/auth/session'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { MobileNav } from '@/components/layout/MobileNav'
 import { UserProvider } from '@/components/providers/UserProvider'
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
+  const user = await getSessionUser()
   if (!user) redirect('/login')
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name')
-    .eq('id', user.id)
-    .single()
+  const profile = await getProfile(user.id)
 
   const userInfo = {
     id: user.id,
-    email: user.email ?? '',
+    email: user.email,
     full_name: profile?.full_name ?? user.email?.split('@')[0] ?? 'Mtumiaji',
   }
 

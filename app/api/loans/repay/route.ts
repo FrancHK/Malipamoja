@@ -1,50 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { getSessionUser } from '@/lib/auth/session'
+import { sql } from '@/lib/db'
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const user = await getSessionUser()
     if (!user) return NextResponse.json({ error: 'Haujaidhinishwa' }, { status: 401 })
 
     const { loan_id, amount, notes } = await request.json()
 
-    const admin = createAdminClient()
-
-    const { data: loan } = await admin.from('loans').select('*').eq('id', loan_id).single()
+    const loanRows = await sql`select * from loans where id = ${loan_id}`
+    const loan = loanRows[0]
     if (!loan) return NextResponse.json({ error: 'Mkopo haukupatikana' }, { status: 404 })
 
-    const { data: repayment, error: repayError } = await admin
-      .from('repayments')
-      .insert({ loan_id, amount, paid_at: new Date().toISOString(), recorded_by: user.id, notes })
-      .select()
-      .single()
+    const repayRows = await sql`
+      insert into repayments (loan_id, amount, paid_at, recorded_by, notes)
+      values (${loan_id}, ${amount}, now(), ${user.id}, ${notes ?? null})
+      returning *
+    `
+    const repayment = repayRows[0]
 
-    if (repayError) {
-      console.error('repayments insert:', repayError)
-      return NextResponse.json({ error: repayError.message }, { status: 500 })
+    const newAmountPaid = Number(loan.amount_paid) + Number(amount)
+    const isComplete = newAmountPaid >= Number(loan.total_due)
+
+    await sql`
+      update loans set amount_paid = ${newAmountPaid}, status = ${isComplete ? 'completed' : 'active'}
+      where id = ${loan_id}
+    `
+
+    try {
+      await sql`
+        insert into transactions (group_id, type, amount, description, reference_id, performed_by, member_id)
+        values (${loan.group_id}, 'repayment', ${amount}, ${`Malipo ya mkopo${isComplete ? ' (Mkopo umekamilika!)' : ''}`}, ${repayment.id}, ${user.id}, ${loan.borrower_id})
+      `
+    } catch (txErr) {
+      console.error('transactions insert:', txErr)
     }
-
-    const newAmountPaid = loan.amount_paid + amount
-    const isComplete = newAmountPaid >= loan.total_due
-
-    await admin.from('loans').update({
-      amount_paid: newAmountPaid,
-      status: isComplete ? 'completed' : 'active',
-    }).eq('id', loan_id)
-
-    admin.from('transactions').insert({
-      group_id: loan.group_id,
-      type: 'repayment',
-      amount,
-      description: `Malipo ya mkopo${isComplete ? ' (Mkopo umekamilika!)' : ''}`,
-      reference_id: repayment.id,
-      performed_by: user.id,
-      member_id: loan.borrower_id,
-    }).then(({ error: txErr }) => {
-      if (txErr) console.error('transactions insert:', txErr)
-    })
 
     return NextResponse.json({ repayment, is_complete: isComplete }, { status: 201 })
   } catch (err) {

@@ -1,6 +1,7 @@
 import { Metadata } from 'next'
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser, getProfile } from '@/lib/auth/session'
+import { sql } from '@/lib/db'
 import { Header } from '@/components/layout/Header'
 import { formatCurrency } from '@/lib/utils'
 import { MemberLoanRequest } from '@/components/loans/MemberLoanRequest'
@@ -16,30 +17,30 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 }
 
 export default async function MemberLoansPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getSessionUser()
   if (!user) redirect('/login')
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name')
-    .eq('id', user.id)
-    .single()
+  const profile = await getProfile(user.id)
 
-  const { data: loans } = await supabase
-    .from('loans')
-    .select('*')
-    .eq('borrower_id', user.id)
-    .order('created_at', { ascending: false })
+  const loans = (await sql`
+    select id, amount::float8 as amount, total_due::float8 as total_due, amount_paid::float8 as amount_paid,
+           status, purpose, due_date, created_at
+    from loans where borrower_id = ${user.id}
+    order by created_at desc
+  `) as Record<string, any>[]
 
-  const { data: memberships } = await supabase
-    .from('group_members')
-    .select('group_id, groups(id, name, interest_rate, max_loan_multiplier)')
-    .eq('user_id', user.id)
-    .eq('is_active', true)
+  const memberships = (await sql`
+    select json_build_object(
+      'id', g.id, 'name', g.name,
+      'interest_rate', g.interest_rate::float8, 'max_loan_multiplier', g.max_loan_multiplier
+    ) as groups
+    from group_members gm
+    join groups g on g.id = gm.group_id
+    where gm.user_id = ${user.id} and gm.is_active = true
+  `) as { groups: any }[]
 
-  const myGroups = (memberships ?? []).map(m => (m as any).groups).filter(Boolean)
-  const hasActiveOrPending = (loans ?? []).some(l => ['pending', 'active', 'approved'].includes(l.status))
+  const myGroups = memberships.map(m => m.groups).filter(Boolean)
+  const hasActiveOrPending = loans.some(l => ['pending', 'active', 'approved'].includes(l.status))
 
   return (
     <div className="flex flex-col h-full">

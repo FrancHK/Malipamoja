@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { getSessionUser } from '@/lib/auth/session'
+import { sql } from '@/lib/db'
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const user = await getSessionUser()
     if (!user) return NextResponse.json({ error: 'Haujaidhinishwa' }, { status: 401 })
 
     const body = await request.json()
@@ -18,44 +17,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Kiasi cha mchango lazima kiwe angalau TZS 1,000' }, { status: 400 })
     }
 
-    // Use admin client for all writes — RLS blocks the creator from adding
-    // themselves to group_members before they are yet in the group.
-    const admin = createAdminClient()
+    // Ensure the creator has a profile row (FK target for created_by).
+    await sql`
+      insert into profiles (id, full_name)
+      values (${user.id}, ${user.name ?? user.email?.split('@')[0] ?? 'Mtumiaji'})
+      on conflict (id) do nothing
+    `
 
-    // Ensure profile exists in case trigger didn't fire on signup
-    await admin.from('profiles').upsert({
-      id: user.id,
-      full_name: user.user_metadata?.full_name ?? user.email?.split('@')[0] ?? 'Mtumiaji',
-      phone: user.user_metadata?.phone ?? null,
-    }, { onConflict: 'id', ignoreDuplicates: true })
-
-    const { data: group, error: groupError } = await admin
-      .from('groups')
-      .insert({
-        name: name.trim(),
-        description: description?.trim() || null,
-        contribution_amount: Number(contribution_amount),
-        contribution_cycle: contribution_cycle || 'monthly',
-        created_by: user.id,
-      })
-      .select()
-      .single()
-
-    if (groupError) {
-      console.error('groups insert:', groupError)
-      return NextResponse.json({ error: groupError.message }, { status: 500 })
-    }
+    const groupRows = await sql`
+      insert into groups (name, description, contribution_amount, contribution_cycle, created_by)
+      values (
+        ${name.trim()}, ${description?.trim() || null},
+        ${Number(contribution_amount)}, ${contribution_cycle || 'monthly'}, ${user.id}
+      )
+      returning *
+    `
+    const group = groupRows[0]
 
     // Add creator as group admin
-    const { error: memberError } = await admin.from('group_members').insert({
-      group_id: group.id,
-      user_id: user.id,
-      role: 'admin',
-    })
-    if (memberError) {
-      console.error('group_members insert:', memberError)
-      return NextResponse.json({ error: memberError.message }, { status: 500 })
-    }
+    await sql`
+      insert into group_members (group_id, user_id, role)
+      values (${group.id}, ${user.id}, 'admin')
+    `
 
     return NextResponse.json({ group }, { status: 201 })
   } catch (err) {
@@ -66,26 +49,23 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const user = await getSessionUser()
     if (!user) return NextResponse.json({ error: 'Haujaidhinishwa' }, { status: 401 })
 
-    const { data: memberships } = await supabase
-      .from('group_members')
-      .select('group_id, role')
-      .eq('user_id', user.id)
-      .eq('is_active', true)
-
-    if (!memberships?.length) return NextResponse.json({ groups: [] })
-
-    const groupIds = memberships.map((m) => m.group_id)
-    const { data: groups, error } = await supabase
-      .from('groups')
-      .select('*')
-      .in('id', groupIds)
-      .order('created_at', { ascending: false })
-
-    if (error) throw error
+    const groups = await sql`
+      select g.id, g.name, g.description,
+             g.contribution_amount::float8 as contribution_amount, g.contribution_cycle,
+             g.interest_rate::float8 as interest_rate, g.max_loan_multiplier,
+             g.created_by, g.created_at, g.updated_at,
+             gm.role as my_role,
+             (select count(*)::int from group_members m where m.group_id = g.id and m.is_active = true) as member_count,
+             (select coalesce(sum(c.amount), 0)::float8 from contributions c where c.group_id = g.id and c.status = 'paid') as total_savings,
+             (select count(*)::int from loans l where l.group_id = g.id and l.status = 'active') as active_loans
+      from groups g
+      join group_members gm on gm.group_id = g.id
+      where gm.user_id = ${user.id} and gm.is_active = true
+      order by g.created_at desc
+    `
     return NextResponse.json({ groups })
   } catch (err) {
     console.error('GET /api/groups:', err)

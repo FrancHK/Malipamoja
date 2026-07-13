@@ -1,7 +1,7 @@
 import { Metadata } from 'next'
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { getSessionUser, getProfile } from '@/lib/auth/session'
+import { sql } from '@/lib/db'
 import { Header } from '@/components/layout/Header'
 import { ApplicationsClient } from '@/components/applications/ApplicationsClient'
 import type { MemberApplication } from '@/lib/types'
@@ -9,28 +9,24 @@ import type { MemberApplication } from '@/lib/types'
 export const metadata: Metadata = { title: 'Maombi ya Kujiunga' }
 
 export default async function ApplicationsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getSessionUser()
   if (!user) redirect('/login')
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role, full_name')
-    .eq('id', user.id)
-    .single()
-
+  const profile = await getProfile(user.id)
   if (!profile || !['mwenyekiti', 'katibu', 'msimamizi'].includes(profile.role)) {
     redirect('/dashboard')
   }
 
-  const admin = createAdminClient()
-  const { data: applications } = await admin
-    .from('member_applications')
-    .select('*, group:groups(name)')
-    .order('created_at', { ascending: false })
+  const applications = (await sql`
+    select a.*,
+           case when g.id is null then null else json_build_object('name', g.name) end as group
+    from member_applications a
+    left join groups g on g.id = a.group_id
+    order by a.created_at desc
+  `) as MemberApplication[]
 
-  const pending = (applications ?? []).filter(a => a.status === 'pending')
-  const done = (applications ?? []).filter(a => a.status !== 'pending')
+  const pending = applications.filter((a) => a.status === 'pending')
+  const done = applications.filter((a) => a.status !== 'pending')
 
   return (
     <div className="flex flex-col h-full">

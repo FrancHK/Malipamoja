@@ -8,7 +8,6 @@ import { AddContributionModal } from '@/components/contributions/AddContribution
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { formatCurrency } from '@/lib/utils'
-import { createClient } from '@/lib/supabase/client'
 import { useUser } from '@/components/providers/UserProvider'
 import type { Contribution, Group, GroupMember } from '@/lib/types'
 import type { ContributionStatus } from '@/lib/types'
@@ -31,41 +30,16 @@ export default function ContributionsPage() {
   const [loading, setLoading] = useState(true)
 
   async function fetchData() {
-    const supabase = createClient()
-    const { data: { user: authUser } } = await supabase.auth.getUser()
-    if (!authUser) return
-
-    const { data: memberships } = await supabase
-      .from('group_members')
-      .select('group_id, role')
-      .eq('user_id', authUser.id)
-      .eq('is_active', true)
-
-    const groupIds = memberships?.map((m) => m.group_id) ?? []
-    if (groupIds.length === 0) { setLoading(false); return }
-
-    const [
-      { data: contribData },
-      { data: groupsData },
-      { data: membersData },
-    ] = await Promise.all([
-      supabase
-        .from('contributions')
-        .select('*, member:profiles!member_id(full_name, phone, avatar_url, id, created_at, updated_at)')
-        .in('group_id', groupIds)
-        .order('created_at', { ascending: false }),
-      supabase.from('groups').select('*').in('id', groupIds).order('name'),
-      supabase
-        .from('group_members')
-        .select('*, profile:profiles!user_id(id, full_name, phone, avatar_url, created_at, updated_at)')
-        .in('group_id', groupIds)
-        .eq('is_active', true),
-    ])
-
-    setContributions((contribData ?? []) as Contribution[])
-    setGroups((groupsData ?? []) as Group[])
-    setMembers((membersData ?? []) as GroupMember[])
-    setLoading(false)
+    try {
+      const res = await fetch('/api/contributions')
+      if (!res.ok) return
+      const { contributions, groups, members } = await res.json()
+      setContributions((contributions ?? []) as Contribution[])
+      setGroups((groups ?? []) as Group[])
+      setMembers((members ?? []) as GroupMember[])
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { fetchData() }, [])

@@ -6,7 +6,6 @@ import { useRouter } from 'next/navigation'
 import { Eye, EyeOff, User, Mail, Phone } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { createClient } from '@/lib/supabase/client'
 
 export default function RegisterPage() {
   const router = useRouter()
@@ -38,13 +37,13 @@ export default function RegisterPage() {
     }
 
     try {
-      const supabase = createClient()
-      const { error: authError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { data: { full_name, phone } },
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name, email, phone, password }),
       })
-      if (authError) throw authError
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
       setSuccess(true)
       setTimeout(() => router.push('/login'), 3000)
     } catch (err: unknown) {

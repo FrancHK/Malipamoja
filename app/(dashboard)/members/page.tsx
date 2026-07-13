@@ -7,7 +7,6 @@ import { MemberCard } from '@/components/members/MemberCard'
 import { Avatar } from '@/components/ui/Avatar'
 import { roleBadge, contributionStatusBadge } from '@/components/ui/Badge'
 import { formatCurrency } from '@/lib/utils'
-import { createClient } from '@/lib/supabase/client'
 import { useUser } from '@/components/providers/UserProvider'
 import type { GroupMember, Group } from '@/lib/types'
 import type { UserRole } from '@/lib/types'
@@ -30,46 +29,15 @@ export default function MembersPage() {
 
   useEffect(() => {
     async function fetchData() {
-      const supabase = createClient()
-      const { data: { user: authUser } } = await supabase.auth.getUser()
-      if (!authUser) return
-
-      const { data: memberships } = await supabase
-        .from('group_members')
-        .select('group_id')
-        .eq('user_id', authUser.id)
-        .eq('is_active', true)
-
-      const groupIds = memberships?.map((m) => m.group_id) ?? []
-      if (groupIds.length === 0) { setLoading(false); return }
-
-      const [{ data: membersData }, { data: groupsData }, { data: contribData }] = await Promise.all([
-        supabase
-          .from('group_members')
-          .select('*, profile:profiles!user_id(id, full_name, phone, avatar_url, member_code, created_at, updated_at)')
-          .in('group_id', groupIds)
-          .eq('is_active', true)
-          .order('joined_at'),
-        supabase.from('groups').select('id, name').in('id', groupIds),
-        supabase.from('contributions').select('member_id, amount, status').in('group_id', groupIds),
-      ])
-
-      const totalMap: Record<string, number> = {}
-      const pendingMap: Record<string, number> = {}
-      for (const c of contribData ?? []) {
-        if (c.status === 'paid') totalMap[c.member_id] = (totalMap[c.member_id] ?? 0) + c.amount
-        else pendingMap[c.member_id] = (pendingMap[c.member_id] ?? 0) + c.amount
+      try {
+        const res = await fetch('/api/members')
+        if (!res.ok) return
+        const { members, groups } = await res.json()
+        setMembers((members ?? []) as GroupMember[])
+        setGroups((groups ?? []) as Group[])
+      } finally {
+        setLoading(false)
       }
-
-      const enriched = (membersData ?? []).map((m) => ({
-        ...m,
-        total_contributions: totalMap[m.user_id] ?? 0,
-        pending_contributions: pendingMap[m.user_id] ?? 0,
-      })) as GroupMember[]
-
-      setMembers(enriched)
-      setGroups((groupsData ?? []) as Group[])
-      setLoading(false)
     }
     fetchData()
   }, [])

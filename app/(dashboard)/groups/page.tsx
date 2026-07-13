@@ -6,7 +6,6 @@ import { Header } from '@/components/layout/Header'
 import { GroupCard } from '@/components/groups/GroupCard'
 import { CreateGroupModal } from '@/components/groups/CreateGroupModal'
 import { Button } from '@/components/ui/Button'
-import { createClient } from '@/lib/supabase/client'
 import { useUser } from '@/components/providers/UserProvider'
 import type { Group } from '@/lib/types'
 
@@ -19,47 +18,14 @@ export default function GroupsPage() {
   const [loading, setLoading] = useState(true)
 
   async function fetchGroups() {
-    const supabase = createClient()
-    const { data: { user: authUser } } = await supabase.auth.getUser()
-    if (!authUser) return
-
-    const { data: memberships } = await supabase
-      .from('group_members')
-      .select('group_id, role')
-      .eq('user_id', authUser.id)
-      .eq('is_active', true)
-
-    const groupIds = memberships?.map((m) => m.group_id) ?? []
-    if (groupIds.length === 0) { setLoading(false); return }
-
-    const [
-      { data: groupsData },
-      { data: allMembers },
-      { data: activeLoans },
-      { data: paidContributions },
-    ] = await Promise.all([
-      supabase.from('groups').select('*').in('id', groupIds).order('created_at', { ascending: false }),
-      supabase.from('group_members').select('group_id').in('group_id', groupIds).eq('is_active', true),
-      supabase.from('loans').select('group_id').in('group_id', groupIds).eq('status', 'active'),
-      supabase.from('contributions').select('group_id, amount').in('group_id', groupIds).eq('status', 'paid'),
-    ])
-
-    const roleMap = Object.fromEntries((memberships ?? []).map((m) => [m.group_id, m.role]))
-    const memberCountMap: Record<string, number> = {}
-    for (const m of allMembers ?? []) memberCountMap[m.group_id] = (memberCountMap[m.group_id] ?? 0) + 1
-    const loanCountMap: Record<string, number> = {}
-    for (const l of activeLoans ?? []) loanCountMap[l.group_id] = (loanCountMap[l.group_id] ?? 0) + 1
-    const savingsMap: Record<string, number> = {}
-    for (const c of paidContributions ?? []) savingsMap[c.group_id] = (savingsMap[c.group_id] ?? 0) + c.amount
-
-    setGroups((groupsData ?? []).map((g) => ({
-      ...g,
-      member_count: memberCountMap[g.id] ?? 0,
-      total_savings: savingsMap[g.id] ?? 0,
-      active_loans: loanCountMap[g.id] ?? 0,
-      my_role: roleMap[g.id],
-    })) as Group[])
-    setLoading(false)
+    try {
+      const res = await fetch('/api/groups')
+      if (!res.ok) return
+      const { groups } = await res.json()
+      setGroups((groups ?? []) as Group[])
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { fetchGroups() }, [])

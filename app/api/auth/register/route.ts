@@ -36,6 +36,9 @@ export async function POST(req: Request) {
       on conflict (id) do update
         set full_name = excluded.full_name, phone = excluded.phone
     `
+    // Staff approve join requests, which creates member accounts via the
+    // Neon Auth admin API — that API requires the Better Auth 'admin' role.
+    await sql`update neon_auth."user" set role = 'admin' where id = ${userId}`
   }
 
   return NextResponse.json({ success: true })

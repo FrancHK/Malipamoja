@@ -160,26 +160,48 @@ export function ApplicationsClient({
   const router = useRouter()
   const [pendingList, setPendingList] = useState(pending)
   const [doneList, setDoneList] = useState(done)
+  const [error, setError] = useState('')
 
   async function handleAction(id: string, action: 'approve' | 'reject', reason?: string) {
-    const res = await fetch(`/api/applications/${id}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, rejection_reason: reason }),
-    })
-    if (res.ok) {
+    setError('')
+    try {
+      const res = await fetch(`/api/applications/${id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, rejection_reason: reason }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => null)
+        setError(data?.error ?? `Hitilafu imetokea kwenye seva (${res.status}). Jaribu tena.`)
+        return
+      }
+      const data = await res.json()
       const app = pendingList.find(a => a.id === id)
       if (app) {
-        const updated = { ...app, status: action === 'approve' ? 'approved' : 'rejected' } as MemberApplication
+        const updated = {
+          ...app,
+          status: action === 'approve' ? 'approved' : 'rejected',
+          member_code: data?.member_code ?? app.member_code,
+          rejection_reason: action === 'reject' ? (reason || null) : app.rejection_reason,
+        } as MemberApplication
         setPendingList(prev => prev.filter(a => a.id !== id))
         setDoneList(prev => [updated, ...prev])
       }
       router.refresh()
+    } catch {
+      setError('Imeshindwa kuwasiliana na seva. Angalia mtandao wako kisha ujaribu tena.')
     }
   }
 
   return (
     <div className="space-y-8 max-w-3xl">
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-start justify-between gap-3">
+          <p className="text-sm text-red-400">{error}</p>
+          <button type="button" onClick={() => setError('')} className="text-red-400/60 hover:text-red-400 text-sm">✕</button>
+        </div>
+      )}
+
       {/* Pending */}
       <section>
         <div className="flex items-center gap-2 mb-4">

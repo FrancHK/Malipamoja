@@ -38,10 +38,10 @@ export function Header({ user, title, subtitle, action }: HeaderProps) {
         </div>
 
         {/* Notification bell */}
-        <button className="relative w-9 h-9 flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
+        <a href="/notifications" className="relative w-9 h-9 flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
           <Bell className="w-5 h-5" />
           <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-emerald-500 rounded-full" />
-        </button>
+        </a>
 
         {/* CTA action */}
         {action && (
